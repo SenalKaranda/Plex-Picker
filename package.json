@@ -1,0 +1,24 @@
+{
+  "name": "plex-random-picker",
+  "version": "1.0.0",
+  "description": "A slot machine-style random movie picker for Plex libraries",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "keywords": [
+    "plex",
+    "random",
+    "movie",
+    "picker"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "axios": "^1.6.0",
+    "cookie-parser": "^1.4.6"
+  }
+}
+
