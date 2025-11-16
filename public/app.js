@@ -2,7 +2,7 @@
 let appState = {
     plexIp: null,
     plexToken: null,
-    selectedSections: [1, 2],
+    selectedSections: [1, 2], // Movies (1), TV Shows (2)
     theme: 'dark',
     accentColor: '#3b82f6',
     allItems: [],
@@ -23,6 +23,7 @@ const slotMachine = document.getElementById('slot-machine');
 const resultContainer = document.getElementById('result-container');
 const loading = document.getElementById('loading');
 const errorMessage = document.getElementById('error-message');
+const setupError = document.getElementById('setup-error');
 
 // Cookie Management
 function setCookie(name, value, days = 365) {
@@ -55,7 +56,13 @@ function loadStateFromCookies() {
     
     const savedSections = getCookie('selectedSections');
     if (savedSections) {
-        appState.selectedSections = JSON.parse(savedSections);
+        const parsed = JSON.parse(savedSections);
+        // Filter out invalid sections (only allow 1 and 2)
+        appState.selectedSections = parsed.filter(s => s === 1 || s === 2);
+        // If no valid sections, use default
+        if (appState.selectedSections.length === 0) {
+            appState.selectedSections = [1, 2];
+        }
     }
 }
 
@@ -124,10 +131,15 @@ async function fetchAllItems() {
             sections: appState.selectedSections.join(',')
         });
         const response = await fetch(`/api/items?${params}`);
-        if (!response.ok) throw new Error('Failed to fetch items');
+        if (!response.ok) {
+            const errorData = await response.json().catch(() => ({}));
+            throw new Error(errorData.error || 'Failed to fetch items');
+        }
         const data = await response.json();
+        console.log(`Fetched ${data.items?.length || 0} items from API`);
         return data.items || [];
     } catch (error) {
+        console.error('Error fetching items:', error);
         showError('Failed to load items: ' + error.message);
         return [];
     }
@@ -154,15 +166,34 @@ async function fetchRandomItem() {
 
 // Error Handling
 function showError(message) {
-    errorMessage.textContent = message;
-    errorMessage.classList.remove('hidden');
-    setTimeout(() => {
-        errorMessage.classList.add('hidden');
-    }, 5000);
+    let targetError = null;
+    
+    // Show error in the appropriate screen
+    if (setupScreen && !setupScreen.classList.contains('hidden')) {
+        // We're on the setup screen
+        targetError = setupError;
+    } else {
+        // We're on the main screen
+        targetError = errorMessage;
+    }
+    
+    if (targetError) {
+        targetError.textContent = message;
+        targetError.classList.remove('hidden');
+        // Auto-hide after 5 seconds
+        setTimeout(() => {
+            targetError.classList.add('hidden');
+        }, 5000);
+    }
 }
 
 function hideError() {
-    errorMessage.classList.add('hidden');
+    if (errorMessage) {
+        errorMessage.classList.add('hidden');
+    }
+    if (setupError) {
+        setupError.classList.add('hidden');
+    }
 }
 
 // Slot Machine Animation
@@ -172,9 +203,13 @@ let animationDuration = 0;
 let startPosition = 0;
 let targetPosition = 0;
 let selectedItemIndex = 0;
+let currentItemsList = []; // Store the items being displayed
 
 function createSlotMachine(items) {
     slotMachine.innerHTML = '';
+    
+    // Items are already filtered in startSlotMachineAnimation
+    console.log(`Creating slot machine with ${items.length} items`);
     
     // Duplicate items for seamless scrolling
     const duplicatedItems = [...items, ...items, ...items];
@@ -183,12 +218,13 @@ function createSlotMachine(items) {
         const slotItem = document.createElement('div');
         slotItem.className = 'slot-item';
         slotItem.dataset.index = index;
+        slotItem.title = item.title || 'Unknown';
         
         const img = document.createElement('img');
-        img.src = item.posterUrl || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450"><rect width="300" height="450" fill="%23ccc"/></svg>';
+        img.src = item.posterUrl || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450"><rect width="300" height="450" fill="%23ccc"/><text x="150" y="225" text-anchor="middle" font-size="20" fill="%23999">' + (item.title || 'No Poster') + '</text></svg>';
         img.alt = item.title || 'Poster';
         img.onerror = function() {
-            this.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450"><rect width="300" height="450" fill="%23ccc"/></svg>';
+            this.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="300" height="450"><rect width="300" height="450" fill="%23ccc"/><text x="150" y="225" text-anchor="middle" font-size="20" fill="%23999">' + (item.title || 'No Poster') + '</text></svg>';
         };
         
         slotItem.appendChild(img);
@@ -197,44 +233,76 @@ function createSlotMachine(items) {
 }
 
 function startSlotMachineAnimation(items) {
-    if (items.length === 0) {
+    // Filter valid items first
+    const validItems = items.filter(item => item.title || item.key);
+    
+    if (validItems.length === 0) {
         showError('No items available in selected sections');
         return;
     }
+    
+    // Store items for later use
+    currentItemsList = validItems;
     
     // Hide result, show slot machine
     resultContainer.classList.add('hidden');
     slotMachineContainer.classList.remove('hidden');
     
-    createSlotMachine(items);
+    // Hide roll button during animation
+    const rollBtn = document.getElementById('roll-btn');
+    if (rollBtn) rollBtn.style.display = 'none';
     
-    // Calculate positions
-    const itemWidth = 320; // 300px width + 20px margin
-    const totalItems = items.length * 3; // We duplicated items 3 times
-    const totalWidth = totalItems * itemWidth;
-    const containerWidth = slotMachineContainer.offsetWidth;
+    createSlotMachine(validItems);
     
-    // Select random item (from first set of items)
-    selectedItemIndex = Math.floor(Math.random() * items.length);
+    // Wait for layout to calculate actual item dimensions
+    requestAnimationFrame(() => {
+        // Calculate positions using validItems
+        // Get actual item width from first item (includes margin)
+        const firstItem = slotMachine.querySelector('.slot-item');
+        if (!firstItem) {
+            showError('Failed to create slot machine items');
+            return;
+        }
+        
+        const itemRect = firstItem.getBoundingClientRect();
+        const itemStyle = getComputedStyle(firstItem);
+        const marginLeft = parseFloat(itemStyle.marginLeft) || 0;
+        const marginRight = parseFloat(itemStyle.marginRight) || 0;
+        const itemWidth = itemRect.width + marginLeft + marginRight;
+        
+        const containerWidth = slotMachineContainer.offsetWidth;
+        const containerCenter = containerWidth / 2;
+        
+        // Select random item (from first set of validItems)
+        selectedItemIndex = Math.floor(Math.random() * validItems.length);
+        
+        // Calculate target position to center selected item
+        // We want to center an item from the middle set (validItems.length to validItems.length * 2)
+        const middleSetStart = validItems.length;
+        const targetItemIndex = middleSetStart + selectedItemIndex;
+        
+        // Calculate the position where the center of the target item should be
+        // Position of item's left edge + half item width = center of item
+        const targetItemLeft = targetItemIndex * itemWidth;
+        const targetItemCenter = targetItemLeft + (itemWidth / 2);
+        
+        // We need to translate the slot machine so the target item's center aligns with container center
+        targetPosition = targetItemCenter - containerCenter;
+        
+        // Start from a random position in the first set
+        startPosition = Math.random() * (validItems.length * itemWidth);
+        
+        // Random duration: 4-6 seconds (5s ± 1s)
+        animationDuration = 4000 + Math.random() * 2000; // 4000-6000ms
+        
+        // Set initial position
+        slotMachine.style.transform = `translateX(-${startPosition}px)`;
+        
+        // Start animation
+        animationStartTime = performance.now();
+        animateSlotMachine();
+    });
     
-    // Calculate target position to center selected item
-    // We want to center an item from the middle set (items.length to items.length * 2)
-    const middleSetStart = items.length;
-    const targetIndex = middleSetStart + selectedItemIndex;
-    targetPosition = (targetIndex * itemWidth) - (containerWidth / 2) + (itemWidth / 2);
-    
-    // Start from a random position in the first set
-    startPosition = Math.random() * (items.length * itemWidth);
-    
-    // Random duration: 4-6 seconds (5s ± 1s)
-    animationDuration = 4000 + Math.random() * 2000; // 4000-6000ms
-    
-    // Set initial position
-    slotMachine.style.transform = `translateX(-${startPosition}px)`;
-    
-    // Start animation
-    animationStartTime = performance.now();
-    animateSlotMachine();
 }
 
 function animateSlotMachine() {
@@ -259,14 +327,86 @@ function animateSlotMachine() {
 }
 
 async function onSlotMachineComplete() {
-    // Fetch the selected item details
-    const result = await fetchRandomItem();
-    if (result) {
-        appState.currentResult = result;
-        displayResult(result);
-    } else {
-        showError('Failed to get movie details');
+    // Determine which item is actually centered by checking DOM positions
+    const slotMachineWrapper = document.querySelector('.slot-machine-wrapper');
+    if (!slotMachineWrapper) {
+        showError('Slot machine wrapper not found');
+        const rollBtn = document.getElementById('roll-btn');
+        if (rollBtn) rollBtn.style.display = 'block';
+        return;
     }
+    
+    const containerRect = slotMachineWrapper.getBoundingClientRect();
+    const containerCenterX = containerRect.left + (containerRect.width / 2);
+    
+    // Find the item closest to the center
+    const slotItems = slotMachine.querySelectorAll('.slot-item');
+    let closestItem = null;
+    let closestDistance = Infinity;
+    let actualSelectedIndex = -1;
+    
+    slotItems.forEach((item, index) => {
+        const itemRect = item.getBoundingClientRect();
+        const itemCenterX = itemRect.left + (itemRect.width / 2);
+        const distance = Math.abs(itemCenterX - containerCenterX);
+        
+        if (distance < closestDistance) {
+            closestDistance = distance;
+            closestItem = item;
+            actualSelectedIndex = index;
+        }
+    });
+    
+    // Map the DOM index back to the original item index
+    // Items are duplicated 3 times, so we need to find which set we're in
+    const itemsPerSet = currentItemsList.length;
+    const actualItemIndex = actualSelectedIndex % itemsPerSet;
+    
+    if (currentItemsList.length === 0 || actualItemIndex >= currentItemsList.length) {
+        showError('No item selected');
+        // Show roll button again
+        const rollBtn = document.getElementById('roll-btn');
+        if (rollBtn) rollBtn.style.display = 'block';
+        return;
+    }
+    
+    const selectedItem = currentItemsList[actualItemIndex];
+    
+    // Get the key/ratingKey for URL construction
+    const itemKey = selectedItem.key || selectedItem.ratingKey;
+    if (!itemKey) {
+        showError('Item missing key information');
+        // Show roll button again
+        const rollBtn = document.getElementById('roll-btn');
+        if (rollBtn) rollBtn.style.display = 'block';
+        return;
+    }
+    
+    // Extract the numeric ID from the key (e.g., "/library/metadata/8508" -> "8508")
+    const keyMatch = itemKey.match(/\/(\d+)$/);
+    const itemId = keyMatch ? keyMatch[1] : itemKey;
+    
+    // Construct URLs using the selected item
+    const directPlayUrl = `http://${appState.plexIp}:32400/library/metadata/${itemId}`;
+    const webAppUrl = `http://${appState.plexIp}:32400/web/index.html#!/server/details?key=${encodeURIComponent(itemKey)}`;
+    
+    // Get poster URL - use existing posterUrl or construct from thumb
+    let posterUrl = selectedItem.posterUrl;
+    if (!posterUrl && selectedItem.thumb) {
+        posterUrl = `http://${appState.plexIp}:32400/photo/:/transcode?width=648&height=972&url=${encodeURIComponent(selectedItem.thumb)}&X-Plex-Token=${appState.plexToken}`;
+    }
+    
+    // Construct result object from the selected item
+    const itemResult = {
+        item: selectedItem,
+        directPlayUrl: directPlayUrl,
+        webAppUrl: webAppUrl,
+        posterUrl: posterUrl,
+        plexIp: appState.plexIp
+    };
+    
+    appState.currentResult = itemResult;
+    displayResult(itemResult);
 }
 
 // Result Display
@@ -276,6 +416,10 @@ function displayResult(result) {
     // Hide slot machine, show result
     slotMachineContainer.classList.add('hidden');
     resultContainer.classList.remove('hidden');
+    
+    // Show roll button again (it will be visible when slot machine is shown next time)
+    const rollBtn = document.getElementById('roll-btn');
+    if (rollBtn) rollBtn.style.display = 'block';
     
     // Set poster
     const posterImg = document.getElementById('result-poster-img');
@@ -519,8 +663,30 @@ sectionToggles.forEach(toggle => {
     });
 });
 
+// Roll button (starts the slot machine animation)
+document.getElementById('roll-btn').addEventListener('click', async () => {
+    if (appState.allItems.length === 0) {
+        // Reload items if needed
+        appState.allItems = await fetchAllItems();
+    }
+    if (appState.allItems.length > 0) {
+        await startRandomPick();
+    } else {
+        showError('No items available in selected sections');
+    }
+});
+
 // Re-roll button
 document.getElementById('reroll-btn').addEventListener('click', async () => {
+    // Hide result, show slot machine with roll button
+    resultContainer.classList.add('hidden');
+    slotMachineContainer.classList.remove('hidden');
+    
+    // Ensure roll button is visible
+    const rollBtn = document.getElementById('roll-btn');
+    if (rollBtn) rollBtn.style.display = 'block';
+    
+    // Start the animation immediately
     await startRandomPick();
 });
 
@@ -542,9 +708,16 @@ async function initializeApp() {
     
     loading.classList.add('hidden');
     
-    // Auto-start first pick
+    // Show slot machine container with roll button (don't auto-start)
     if (appState.allItems.length > 0) {
-        await startRandomPick();
+        resultContainer.classList.add('hidden');
+        slotMachineContainer.classList.remove('hidden');
+        // Create slot machine but don't start animation yet
+        const validItems = appState.allItems.filter(item => item.title || item.key);
+        if (validItems.length > 0) {
+            currentItemsList = validItems;
+            createSlotMachine(validItems);
+        }
     }
 }
 
@@ -553,7 +726,6 @@ async function updateSectionCounts() {
     if (sections) {
         document.getElementById('section-1-count').textContent = sections[1]?.count || 0;
         document.getElementById('section-2-count').textContent = sections[2]?.count || 0;
-        document.getElementById('section-5-count').textContent = sections[5]?.count || 0;
     }
 }
 
@@ -563,19 +735,22 @@ async function startRandomPick() {
         return;
     }
     
-    loading.classList.remove('hidden');
+    // Show loading only if we need to fetch items
+    if (appState.allItems.length === 0) {
+        loading.classList.remove('hidden');
+    }
     hideError();
     
-    // Reload items if sections changed
-    appState.allItems = await fetchAllItems();
+    // Reload items if sections changed or if we don't have any
+    if (appState.allItems.length === 0) {
+        appState.allItems = await fetchAllItems();
+        loading.classList.add('hidden');
+    }
     
     if (appState.allItems.length === 0) {
         showError('No items found in selected sections');
-        loading.classList.add('hidden');
         return;
     }
-    
-    loading.classList.add('hidden');
     
     // Start slot machine animation
     startSlotMachineAnimation(appState.allItems);

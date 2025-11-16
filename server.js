@@ -2,9 +2,23 @@ const express = require('express');
 const axios = require('axios');
 const cookieParser = require('cookie-parser');
 const path = require('path');
+const { XMLParser } = require('fast-xml-parser');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// XML Parser configuration
+const parserOptions = {
+  ignoreAttributes: false,
+  attributeNamePrefix: '',
+  textNodeName: '#text',
+  parseAttributeValue: true,
+  parseTrueNumberOnly: false,
+  arrayMode: false,
+  ignoreNameSpace: true,
+  removeNSPrefix: true
+};
+const xmlParser = new XMLParser(parserOptions);
 
 // Middleware
 app.use(express.json());
@@ -64,31 +78,66 @@ app.get('/api/sections', async (req, res) => {
       return res.status(400).json({ error: 'Plex credentials required' });
     }
 
-    const sections = [1, 2, 5]; // Hardcoded sections: TV, Downloads, Vault
+    const sections = [1, 2]; // Hardcoded sections: Movies (1), TV Shows (2)
     const results = {};
 
     // Fetch each section
     for (const sectionId of sections) {
       try {
         const url = `http://${plexIp}:32400/library/sections/${sectionId}/all?X-Plex-Token=${plexToken}`;
-        const response = await axios.get(url, { timeout: 10000 });
-        const xmlData = response.data;
+        const response = await axios.get(url, { 
+          timeout: 10000,
+          responseType: 'text'
+        });
+        const responseData = typeof response.data === 'string' ? response.data : String(response.data);
         
-        // Parse XML to count items
-        const videoCount = (xmlData.match(/<Video/g) || []).length;
-        const directoryCount = (xmlData.match(/<Directory/g) || []).length;
-        const totalCount = videoCount + directoryCount;
+        // Plex API returns JSON, not XML (when accessed via HTTP)
+        let mediaContainer = {};
+        try {
+          // Try parsing as JSON first
+          if (responseData.trim().startsWith('{')) {
+            const parsed = JSON.parse(responseData);
+            mediaContainer = parsed.MediaContainer || {};
+          } else {
+            // Fallback to XML parsing if it's actually XML
+            const parsed = xmlParser.parse(responseData);
+            mediaContainer = parsed.MediaContainer || {};
+          }
+        } catch (parseError) {
+          console.error(`Section ${sectionId} - Parse error:`, parseError.message);
+          throw parseError;
+        }
+        
+        // Plex JSON uses Metadata array instead of Video/Directory
+        let metadata = [];
+        if (mediaContainer.Metadata) {
+          metadata = Array.isArray(mediaContainer.Metadata) ? mediaContainer.Metadata : [mediaContainer.Metadata];
+        }
+        
+        // Count items
+        const totalCount = metadata.length;
+        const size = mediaContainer.size || totalCount;
+        
+        console.log(`Section ${sectionId} - Found ${totalCount} items (size: ${size})`);
         
         results[sectionId] = {
           count: totalCount,
-          videoCount,
-          directoryCount
+          size: size
         };
       } catch (error) {
-        results[sectionId] = {
-          count: 0,
-          error: error.message
-        };
+        // Handle 404 gracefully (section doesn't exist)
+        if (error.response?.status === 404) {
+          results[sectionId] = {
+            count: 0,
+            exists: false
+          };
+        } else {
+          console.error(`Error fetching section ${sectionId}:`, error.message);
+          results[sectionId] = {
+            count: 0,
+            error: error.message
+          };
+        }
       }
     }
 
@@ -102,7 +151,10 @@ app.get('/api/sections', async (req, res) => {
 app.get('/api/random', async (req, res) => {
   try {
     const { plexIp, plexToken } = getPlexCredentials(req);
-    const selectedSections = req.query.sections ? req.query.sections.split(',').map(s => parseInt(s.trim())) : [1, 2, 5];
+    let selectedSections = req.query.sections ? req.query.sections.split(',').map(s => parseInt(s.trim())) : [1, 2];
+    
+    // Filter out invalid sections (only allow 1 and 2)
+    selectedSections = selectedSections.filter(s => s === 1 || s === 2);
     
     if (!plexIp || !plexToken) {
       return res.status(400).json({ error: 'Plex credentials required' });
@@ -118,61 +170,82 @@ app.get('/api/random', async (req, res) => {
     for (const sectionId of selectedSections) {
       try {
         const url = `http://${plexIp}:32400/library/sections/${sectionId}/all?X-Plex-Token=${plexToken}`;
-        const response = await axios.get(url, { timeout: 10000 });
-        const xmlData = response.data;
+        const response = await axios.get(url, { 
+          timeout: 10000,
+          responseType: 'text'
+        });
+        const responseData = typeof response.data === 'string' ? response.data : String(response.data);
         
-        // Parse XML to extract items
-        const videoMatches = xmlData.match(/<Video[^>]*>[\s\S]*?<\/Video>/g) || [];
-        const directoryMatches = xmlData.match(/<Directory[^>]*>[\s\S]*?<\/Directory>/g) || [];
+        // Plex API returns JSON, not XML
+        let mediaContainer = {};
+        if (responseData.trim().startsWith('{')) {
+          const parsed = JSON.parse(responseData);
+          mediaContainer = parsed.MediaContainer || {};
+        } else {
+          // Fallback to XML parsing if it's actually XML
+          const parsed = xmlParser.parse(responseData);
+          mediaContainer = parsed.MediaContainer || {};
+        }
         
-        // Parse each item
-        const parseItem = (xmlString) => {
-          const item = {};
-          // Extract attributes
-          const attrMatches = xmlString.match(/(\w+)="([^"]*)"/g) || [];
-          attrMatches.forEach(attr => {
-            const [, key, value] = attr.match(/(\w+)="([^"]*)"/);
-            item[key] = value;
-          });
+        // Plex JSON uses Metadata array instead of Video/Directory
+        let metadata = [];
+        if (mediaContainer.Metadata) {
+          metadata = Array.isArray(mediaContainer.Metadata) ? mediaContainer.Metadata : [mediaContainer.Metadata];
+        }
+        
+        // Convert parsed items to our format
+        const parseItem = (item) => {
+          const parsedItem = { ...item };
           
-          // Extract child elements
-          item.directors = [];
-          item.roles = [];
-          item.genres = [];
+          // Extract child elements (JSON format)
+          parsedItem.directors = [];
+          parsedItem.roles = [];
+          parsedItem.genres = [];
           
-          const directorMatches = xmlString.match(/<Director[^>]*tag="([^"]*)"/g) || [];
-          directorMatches.forEach(dir => {
-            const match = dir.match(/tag="([^"]*)"/);
-            if (match) item.directors.push(match[1]);
-          });
+          if (item.Director) {
+            const directors = Array.isArray(item.Director) ? item.Director : [item.Director];
+            parsedItem.directors = directors.map(d => {
+              if (typeof d === 'string') return d;
+              return d.tag || d;
+            }).filter(Boolean);
+          }
           
-          const roleMatches = xmlString.match(/<Role[^>]*tag="([^"]*)"/g) || [];
-          roleMatches.forEach(role => {
-            const match = role.match(/tag="([^"]*)"/);
-            if (match) item.roles.push(match[1]);
-          });
+          if (item.Role) {
+            const roles = Array.isArray(item.Role) ? item.Role : [item.Role];
+            parsedItem.roles = roles.map(r => {
+              if (typeof r === 'string') return r;
+              return r.tag || r;
+            }).filter(Boolean);
+          }
           
-          const genreMatches = xmlString.match(/<Genre[^>]*tag="([^"]*)"/g) || [];
-          genreMatches.forEach(genre => {
-            const match = genre.match(/tag="([^"]*)"/);
-            if (match) item.genres.push(match[1]);
-          });
+          if (item.Genre) {
+            const genres = Array.isArray(item.Genre) ? item.Genre : [item.Genre];
+            parsedItem.genres = genres.map(g => {
+              if (typeof g === 'string') return g;
+              return g.tag || g;
+            }).filter(Boolean);
+          }
           
-          return item;
+          return parsedItem;
         };
         
-        videoMatches.forEach(video => {
-          allItems.push(parseItem(video));
+        metadata.forEach(item => {
+          allItems.push(parseItem(item));
         });
         
-        directoryMatches.forEach(dir => {
-          allItems.push(parseItem(dir));
-        });
+        console.log(`Section ${sectionId}: Found ${metadata.length} items`);
       } catch (error) {
-        console.error(`Error fetching section ${sectionId}:`, error.message);
+        // Handle 404 gracefully (section doesn't exist)
+        if (error.response?.status === 404) {
+          console.log(`Section ${sectionId} not found (404) - skipping`);
+        } else {
+          console.error(`Error fetching section ${sectionId}:`, error.message);
+        }
       }
     }
 
+    console.log(`Total items collected: ${allItems.length}`);
+    
     if (allItems.length === 0) {
       return res.status(404).json({ error: 'No items found in selected sections' });
     }
@@ -185,11 +258,20 @@ app.get('/api/random', async (req, res) => {
     let serverId = null;
     try {
       const serverUrl = `http://${plexIp}:32400/?X-Plex-Token=${plexToken}`;
-      const serverResponse = await axios.get(serverUrl, { timeout: 5000 });
-      const serverMatch = serverResponse.data.match(/machineIdentifier="([^"]*)"/);
-      if (serverMatch) {
-        serverId = serverMatch[1];
+      const serverResponse = await axios.get(serverUrl, { 
+        timeout: 5000,
+        responseType: 'text'
+      });
+      const serverData = typeof serverResponse.data === 'string' ? serverResponse.data : String(serverResponse.data);
+      let mediaContainer = {};
+      if (serverData.trim().startsWith('{')) {
+        const parsed = JSON.parse(serverData);
+        mediaContainer = parsed.MediaContainer || {};
+      } else {
+        const parsed = xmlParser.parse(serverData);
+        mediaContainer = parsed.MediaContainer || {};
       }
+      serverId = mediaContainer.machineIdentifier || null;
     } catch (error) {
       console.error('Error fetching server info:', error.message);
     }
@@ -222,7 +304,7 @@ app.get('/api/random', async (req, res) => {
 app.get('/api/items', async (req, res) => {
   try {
     const { plexIp, plexToken } = getPlexCredentials(req);
-    const selectedSections = req.query.sections ? req.query.sections.split(',').map(s => parseInt(s.trim())) : [1, 2, 5];
+    const selectedSections = req.query.sections ? req.query.sections.split(',').map(s => parseInt(s.trim())) : [1, 2];
     
     if (!plexIp || !plexToken) {
       return res.status(400).json({ error: 'Plex credentials required' });
@@ -234,39 +316,54 @@ app.get('/api/items', async (req, res) => {
     for (const sectionId of selectedSections) {
       try {
         const url = `http://${plexIp}:32400/library/sections/${sectionId}/all?X-Plex-Token=${plexToken}`;
-        const response = await axios.get(url, { timeout: 10000 });
-        const xmlData = response.data;
+        const response = await axios.get(url, { 
+          timeout: 10000,
+          responseType: 'text'
+        });
+        const responseData = typeof response.data === 'string' ? response.data : String(response.data);
         
-        // Parse XML to extract items
-        const videoMatches = xmlData.match(/<Video[^>]*>[\s\S]*?<\/Video>/g) || [];
-        const directoryMatches = xmlData.match(/<Directory[^>]*>[\s\S]*?<\/Directory>/g) || [];
+        // Plex API returns JSON, not XML
+        let mediaContainer = {};
+        if (responseData.trim().startsWith('{')) {
+          const parsed = JSON.parse(responseData);
+          mediaContainer = parsed.MediaContainer || {};
+        } else {
+          // Fallback to XML parsing if it's actually XML
+          const parsed = xmlParser.parse(responseData);
+          mediaContainer = parsed.MediaContainer || {};
+        }
         
-        // Parse each item (simplified for slot machine)
-        const parseItem = (xmlString) => {
-          const item = {};
-          const attrMatches = xmlString.match(/(\w+)="([^"]*)"/g) || [];
-          attrMatches.forEach(attr => {
-            const [, key, value] = attr.match(/(\w+)="([^"]*)"/);
-            item[key] = value;
-          });
+        // Plex JSON uses Metadata array instead of Video/Directory
+        let metadata = [];
+        if (mediaContainer.Metadata) {
+          metadata = Array.isArray(mediaContainer.Metadata) ? mediaContainer.Metadata : [mediaContainer.Metadata];
+        }
+        
+        // Convert parsed items to our format (simplified for slot machine)
+        const parseItem = (item) => {
+          const parsedItem = { ...item };
           
-          // Get poster URL
-          if (item.thumb) {
-            item.posterUrl = `http://${plexIp}:32400/photo/:/transcode?width=300&height=450&url=${encodeURIComponent(item.thumb)}&X-Plex-Token=${plexToken}`;
+          // Get poster URL - try thumb, art, or grandparentThumb
+          const thumbSource = item.thumb || item.art || item.grandparentThumb;
+          if (thumbSource) {
+            parsedItem.posterUrl = `http://${plexIp}:32400/photo/:/transcode?width=300&height=450&url=${encodeURIComponent(thumbSource)}&X-Plex-Token=${plexToken}`;
+          } else {
+            parsedItem.posterUrl = null;
           }
           
-          return item;
+          return parsedItem;
         };
         
-        videoMatches.forEach(video => {
-          allItems.push(parseItem(video));
-        });
-        
-        directoryMatches.forEach(dir => {
-          allItems.push(parseItem(dir));
+        metadata.forEach(item => {
+          allItems.push(parseItem(item));
         });
       } catch (error) {
-        console.error(`Error fetching section ${sectionId}:`, error.message);
+        // Handle 404 gracefully (section doesn't exist)
+        if (error.response?.status === 404) {
+          console.log(`Section ${sectionId} not found (404) - skipping`);
+        } else {
+          console.error(`Error fetching section ${sectionId}:`, error.message);
+        }
       }
     }
 

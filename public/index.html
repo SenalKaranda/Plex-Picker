@@ -5,6 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Plex Random Picker</title>
     <link rel="stylesheet" href="styles.css">
+    <link rel='stylesheet' href='https://cdn-uicons.flaticon.com/3.0.0/uicons-regular-rounded/css/uicons-regular-rounded.css'>
+    <link rel='stylesheet' href='https://cdn-uicons.flaticon.com/3.0.0/uicons-solid-rounded/css/uicons-solid-rounded.css'>
 </head>
 <body>
     <!-- Setup Screen -->
@@ -26,11 +28,11 @@
                 <div class="form-group checkbox-group">
                     <label>
                         <input type="checkbox" id="save-credentials" checked>
-                        <span>Save credentials in browser (stored locally in cookies)</span>
+                        <span>Save credentials in browser. <small>Your data is stored ONLY locally in your browser.</small></span>
                     </label>
                 </div>
                 <button type="submit" class="btn btn-primary">Connect to Plex</button>
-                <div id="setup-error" class="error-message"></div>
+                <div id="setup-error" class="error-message hidden"></div>
             </form>
         </div>
     </div>
@@ -40,19 +42,13 @@
         <!-- Header -->
         <header class="app-header">
             <div class="header-content">
-                <h1>Plex Random Picker</h1>
+                <h1>Plex Randomizer</h1>
                 <div class="header-controls">
                     <button id="settings-btn" class="btn-icon" title="Settings">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="3"></circle>
-                            <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"></path>
-                        </svg>
+                        <i class="fi fi-rr-settings"></i>
                     </button>
                     <button id="edit-credentials-btn" class="btn-icon" title="Edit Credentials">
-                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-                            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-                        </svg>
+                        <i class="fi fi-rr-lock"></i>
                     </button>
                 </div>
             </div>
@@ -89,15 +85,11 @@
         <div class="section-toggles">
             <label class="toggle-label">
                 <input type="checkbox" id="section-1" checked data-section="1">
-                <span>TV Series <span id="section-1-count" class="count">-</span></span>
+                <span>Movies <span id="section-1-count" class="count">-</span></span>
             </label>
             <label class="toggle-label">
                 <input type="checkbox" id="section-2" checked data-section="2">
-                <span>Downloads <span id="section-2-count" class="count">-</span></span>
-            </label>
-            <label class="toggle-label">
-                <input type="checkbox" id="section-5" data-section="5">
-                <span>Movie Vault <span id="section-5-count" class="count">-</span></span>
+                <span>TV Shows <span id="section-2-count" class="count">-</span></span>
             </label>
         </div>
 
@@ -108,6 +100,9 @@
                 <div id="slot-machine" class="slot-machine">
                     <!-- Movie posters will be inserted here -->
                 </div>
+            </div>
+            <div class="slot-machine-controls">
+                <button id="roll-btn" class="btn btn-primary btn-large">Roll <i class="fi fi-sr-dice-alt"></i></button>
             </div>
         </div>
 
